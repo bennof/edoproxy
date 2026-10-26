@@ -1,0 +1,21 @@
+# Copyright (c) 2026 Benjamin Benno Falkner
+# SPDX-License-Identifier: MIT
+
+[Unit]
+Description=edoproxy local CORS proxy
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/edoproxy
+EnvironmentFile=%h/.config/edoproxy/environment
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+
+[Install]
+WantedBy=default.target

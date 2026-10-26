@@ -1,0 +1,35 @@
+# Copyright (c) 2026 Benjamin Benno Falkner
+# SPDX-License-Identifier: MIT
+
+[package]
+name = "edoproxy"
+version = "0.1.0-alpha.1"
+edition = "2024"
+description = "Local CORS proxy for edo365"
+license = "MIT"
+authors = ["Benjamin Benno Falkner"]
+publish = false
+
+[dependencies]
+anyhow = "1"
+axum = "0.8"
+clap = { version = "4", features = ["derive", "env"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+url = "2"
+
+[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
+tray-icon = "0.26"
+tao = "0.34"
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+
+[profile.release]
+lto = "thin"
+strip = true
