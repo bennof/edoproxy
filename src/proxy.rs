@@ -8,7 +8,7 @@ use axum::{
     http::{HeaderMap, HeaderValue, Method, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{any, get, post},
+    routing::{any, get},
 };
 use serde::Deserialize;
 use std::{
@@ -20,15 +20,46 @@ use url::Url;
 #[derive(Clone)]
 pub struct AppState {
     pub target: Arc<RwLock<Option<Url>>>,
-    origin: HeaderValue,
+    origins: Arc<RwLock<Vec<HeaderValue>>>,
+    port: Arc<RwLock<u16>>,
+    active_port: u16,
     client: reqwest::Client,
+    config_path: Option<std::path::PathBuf>,
+    update_lock: Arc<std::sync::Mutex<()>>,
 }
 impl AppState {
-    pub fn new(origin: &str) -> anyhow::Result<Self> {
-        crate::config::validate_origin(origin)?;
+    pub fn with_port(mut self, port: u16) -> Self {
+        self.port = Arc::new(RwLock::new(port));
+        self.active_port = port;
+        self
+    }
+
+    pub fn with_config_path(mut self, path: std::path::PathBuf) -> Self {
+        self.config_path = Some(path);
+        self
+    }
+
+    pub fn new(origins: &[String], target: Option<&str>) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            !origins.is_empty(),
+            "at least one allowed origin is required"
+        );
+        for origin in origins {
+            crate::config::validate_origin(origin)?;
+        }
+        let target = target.map(crate::config::validate_target).transpose()?;
         Ok(Self {
-            target: Default::default(),
-            origin: origin.parse()?,
+            config_path: None,
+            update_lock: Default::default(),
+            target: Arc::new(RwLock::new(target)),
+            port: Arc::new(RwLock::new(8765)),
+            active_port: 8765,
+            origins: Arc::new(RwLock::new(
+                origins
+                    .iter()
+                    .map(|origin| origin.parse())
+                    .collect::<Result<_, _>>()?,
+            )),
             client: reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
                 .no_proxy()
@@ -41,8 +72,10 @@ impl AppState {
 
 pub fn router(state: AppState) -> Router {
     Router::new()
-        .route("/health", get(health))
-        .route("/target", post(set_target))
+        .route("/edoproxy/health", get(health))
+        .route("/edoproxy/target", get(get_target).post(set_target))
+        .route("/edoproxy/origin", get(get_origins).post(set_origins))
+        .route("/edoproxy/port", get(get_port).post(set_port))
         .route("/proxy", any(proxy))
         .route("/proxy/", any(proxy))
         .route("/proxy/{*path}", any(proxy))
@@ -58,12 +91,19 @@ fn error(status: StatusCode, message: &str) -> Response {
 async fn origin_guard(State(state): State<AppState>, request: Request, next: Next) -> Response {
     // Reject before handlers execute: CORS response headers alone do not prevent writes.
     let origins = request.headers().get_all(header::ORIGIN);
-    let allowed = origins.iter().count() == 1 && origins.iter().next() == Some(&state.origin);
+    let matched_origin = origins
+        .iter()
+        .next()
+        .filter(|origin| {
+            origins.iter().count() == 1 && state.origins.read().unwrap().contains(origin)
+        })
+        .cloned();
+    let allowed = matched_origin.is_some();
     // Origin-less health checks support service monitoring; all other calls require the SPA origin.
     if !(allowed
         || (origins.iter().next().is_none()
             && request.method() == Method::GET
-            && request.uri().path() == "/health"))
+            && request.uri().path() == "/edoproxy/health"))
     {
         return error(StatusCode::FORBIDDEN, "origin not allowed");
     }
@@ -76,9 +116,9 @@ async fn origin_guard(State(state): State<AppState>, request: Request, next: Nex
     } else {
         next.run(request).await
     };
-    if allowed {
+    if let Some(origin) = matched_origin {
         let headers = response.headers_mut();
-        headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, state.origin);
+        headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin);
         headers.insert(
             header::ACCESS_CONTROL_ALLOW_METHODS,
             HeaderValue::from_static("GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS"),
@@ -104,24 +144,125 @@ struct Target {
     url: String,
 }
 async fn set_target(State(state): State<AppState>, Json(input): Json<Target>) -> Response {
-    let Ok(url) = Url::parse(&input.url) else {
-        return error(StatusCode::BAD_REQUEST, "invalid target URL");
-    };
-    if !matches!(url.scheme(), "http" | "https")
-        || url.host_str().is_none()
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.query().is_some()
-        || url.fragment().is_some()
-        || url.path() != "/"
-    {
+    let Ok(url) = crate::config::validate_target(&input.url) else {
         return error(
             StatusCode::BAD_REQUEST,
             "target must be an HTTP(S) origin without credentials, path, query or fragment",
         );
+    };
+    let result = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        // Serialize disk and memory updates so concurrent requests cannot diverge.
+        let _update = state.update_lock.lock().unwrap();
+        if let Some(path) = &state.config_path {
+            crate::config::save_value(path, "target", toml_edit::value(url.as_str()))?;
+        }
+        *state.target.write().unwrap() = Some(url);
+        Ok(())
+    })
+    .await;
+    match result {
+        Ok(Ok(())) => StatusCode::NO_CONTENT.into_response(),
+        result => {
+            tracing::error!(?result, "failed to persist target");
+            error(StatusCode::INTERNAL_SERVER_ERROR, "could not save target")
+        }
     }
-    *state.target.write().unwrap() = Some(url);
-    StatusCode::NO_CONTENT.into_response()
+}
+
+async fn get_target(State(state): State<AppState>) -> Json<serde_json::Value> {
+    Json(serde_json::json!({"url": state.target.read().unwrap().as_ref().map(Url::as_str)}))
+}
+
+async fn get_origins(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let origins: Vec<String> = state
+        .origins
+        .read()
+        .unwrap()
+        .iter()
+        .map(|origin| origin.to_str().unwrap().to_owned())
+        .collect();
+    Json(serde_json::json!({"origins": origins}))
+}
+
+async fn get_port(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let port = *state.port.read().unwrap();
+    Json(
+        serde_json::json!({"port": port, "active_port": state.active_port, "restart_required": port != state.active_port}),
+    )
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Origins {
+    origins: Vec<String>,
+}
+
+async fn set_origins(State(state): State<AppState>, Json(input): Json<Origins>) -> Response {
+    if input.origins.is_empty()
+        || input
+            .origins
+            .iter()
+            .any(|origin| crate::config::validate_origin(origin).is_err())
+    {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "origins must be a non-empty list of exact HTTP(S) origins",
+        );
+    }
+    let headers: Vec<HeaderValue> =
+        match input.origins.iter().map(|origin| origin.parse()).collect() {
+            Ok(headers) => headers,
+            Err(_) => return error(StatusCode::BAD_REQUEST, "invalid origin header"),
+        };
+    let result = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        let _update = state.update_lock.lock().unwrap();
+        if let Some(path) = &state.config_path {
+            let mut array = toml_edit::Array::new();
+            for origin in input.origins {
+                array.push(origin);
+            }
+            crate::config::save_value(path, "origins", toml_edit::value(array))?;
+        }
+        *state.origins.write().unwrap() = headers;
+        Ok(())
+    })
+    .await;
+    match result {
+        Ok(Ok(())) => StatusCode::NO_CONTENT.into_response(),
+        result => {
+            tracing::error!(?result, "failed to persist origins");
+            error(StatusCode::INTERNAL_SERVER_ERROR, "could not save origins")
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Port {
+    port: u16,
+}
+
+async fn set_port(State(state): State<AppState>, Json(input): Json<Port>) -> Response {
+    if input.port == 0 {
+        return error(StatusCode::BAD_REQUEST, "port must be between 1 and 65535");
+    }
+    let response_state = state.clone();
+    let result = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        let _update = state.update_lock.lock().unwrap();
+        if let Some(path) = &state.config_path {
+            crate::config::save_value(path, "port", toml_edit::value(i64::from(input.port)))?;
+        }
+        *state.port.write().unwrap() = input.port;
+        Ok(())
+    })
+    .await;
+    match result {
+        Ok(Ok(())) => get_port(State(response_state)).await.into_response(),
+        result => {
+            tracing::error!(?result, "failed to persist port");
+            error(StatusCode::INTERNAL_SERVER_ERROR, "could not save port")
+        }
+    }
 }
 
 fn clean_headers(headers: &mut HeaderMap) {

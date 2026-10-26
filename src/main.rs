@@ -1,6 +1,11 @@
 // Copyright (c) 2026 Benjamin Benno Falkner
 // SPDX-License-Identifier: MIT
 
+#![cfg_attr(
+    all(target_os = "windows", not(debug_assertions)),
+    windows_subsystem = "windows"
+)]
+
 use clap::Parser;
 use edoproxy::{
     config::Config,
@@ -17,11 +22,14 @@ fn main() -> anyhow::Result<()> {
         )
         .init();
     let config = Config::parse();
-    let state = AppState::new(&config.origin)?;
+    let settings = config.load()?;
+    let state = AppState::new(&settings.origins, settings.target.as_deref())?
+        .with_config_path(config.path()?)
+        .with_port(settings.port);
     let runtime = tokio::runtime::Runtime::new()?;
     let listener = runtime.block_on(tokio::net::TcpListener::bind((
         std::net::Ipv4Addr::LOCALHOST,
-        config.port,
+        settings.port,
     )))?;
     tracing::info!(address = %listener.local_addr()?, "proxy listening");
     let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();

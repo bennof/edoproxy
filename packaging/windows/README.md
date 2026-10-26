@@ -3,16 +3,38 @@
 
 # Windows / MSIX
 
-`AppxManifest.xml.in` is a packaging template, not a publishable package. Replace `@PACKAGE_NAME@`, `@PUBLISHER@`, and `@PUBLISHER_DISPLAY_NAME@` with the Store identity values. Set `@ARCH@` to the target architecture, such as `x64` or `arm64`.
+The MSIX contains the same proxy, tray, management endpoints and persistent TOML state as the macOS application. The Start menu entry launches without a console in release builds. Packaged launches create or load `config.toml` in the package-local data folder; no command-line configuration is required.
 
-Before the first package build:
+## Build on Windows
 
-1. Build the native release binary with `cargo build --release --locked`.
-2. Implement configuration loading from the MSIX package's local data directory. The binary currently requires `--origin` or `EDOPROXY_ORIGIN`; Start menu launch is not yet configured.
-3. Generate the referenced assets from `assets/icons/edoproxy_logo.png`: StoreLogo (50×50), Square150x150Logo (150×150), and Square44x44Logo (44×44).
-4. Replace the manifest placeholders and stage the manifest, binary, and assets together.
-5. Package with the Windows SDK's `MakeAppx`, then sign and submit according to the Store requirements.
+Install Rust/MSVC, Visual Studio C++ Build Tools, PowerShell 7 and the Windows SDK (MakeAppx and SignTool).
 
-The StartupTask is initially disabled. Tray checkbox integration and file logging remain to be implemented. Resolve writable package data paths through Windows APIs rather than hard-coding user directories.
+```powershell
+$env:RUSTFLAGS = '-C target-feature=+crt-static'
+cargo build --release --locked
+./scripts/build_msix.ps1 -Binary target/release/edoproxy.exe -Output dist/edoproxy.msix -TestSign
+```
 
-Reference: [Windows desktop packaging extensions](https://learn.microsoft.com/en-us/windows/uwp/porting/desktop-to-uwp-extensions).
+The script fills the manifest, generates transparent logo assets, includes the license and example TOML, builds and unpacks the package for verification, and optionally signs it with a temporary self-signed certificate. Only the public `.cer` file is exported; the temporary private key is removed. No trust certificate is installed automatically.
+
+The Release workflow uploads the x64 MSIX and its public test certificate alongside the standalone ZIP. Manual runs only produce artifacts; version tags attach them to the release. These are test-signed packages, not Microsoft Store submissions.
+
+## Install a test build
+
+Download the matching `.msix` and `.cer` from the same run. After verifying that you trust the source, import the certificate in an elevated PowerShell session:
+
+```powershell
+Import-Certificate -FilePath ./edoproxy.cer -CertStoreLocation Cert:\LocalMachine\TrustedPeople
+```
+
+Use the actual downloaded filenames. Then double-click the MSIX or run `Add-AppxPackage -Path ./edoproxy.msix` as the intended user. Start edoproxy from the Start menu. Each build creates a new test certificate; trust its matching certificate before installation and remove old test certificates when no longer needed. Reinstalling the same package version may require uninstalling the previous test build; back up its configuration first.
+
+## Versions and Store distribution
+
+The full Cargo version is retained in the binary and packaged `VERSION` file. MSIX requires four numeric components. Default test version mapping uses the Cargo major/minor/patch and revision `10000 + N` for alpha, `20000 + N` for beta, `30000 + N` for rc and `60000` for stable. For example, `0.1.0-alpha.1` becomes `0.1.0.10001`. Prerelease counters must be below 10000.
+
+For Store submission, supply the assigned `-PackageName` and `-Publisher`, set `-PackageVersion` according to Store requirements (including its reserved fourth component), and omit `-TestSign`. Store identity and submission remain separate setup steps. The default identity is `Falkner.edoproxy`, publisher `CN=Benjamin Benno Falkner`.
+
+The StartupTask is disabled initially. Autostart controls and file logging remain future work on Windows, just as in the macOS implementation.
+
+Reference: [Microsoft's MSIX signing guide](https://learn.microsoft.com/en-us/windows/msix/package/sign-msix-package-guide).

@@ -1,0 +1,10 @@
+# Copyright (c) 2026 Benjamin Benno Falkner
+# SPDX-License-Identifier: MIT
+
+# Exact HTTP(S) origins: scheme, host and optional port; no path or trailing slash.
+origins = ["https://apps.falkner.xyz"]
+# Add development origins explicitly if needed, e.g. "http://localhost:5173".
+port = 8765
+
+# Optional target. API changes are saved here and restored on restart.
+# target = "https://svws.example.local:8443"

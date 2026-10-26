@@ -17,41 +17,68 @@ Windows and macOS provide a system tray. Linux runs without a graphical session 
 
 ## Current status
 
-The development scaffold includes the HTTP proxy, origin validation, preflight handling, a basic tray with a Quit command, integration tests, and CI for Linux, Windows, and macOS. Packaging templates are included; installable MSIX and DMG releases are not yet available.
+The development scaffold includes the HTTP proxy, origin validation, preflight handling, a basic tray with a Quit command, integration tests, and CI for Linux, Windows, and macOS. macOS DMG and Windows MSIX packaging are included. Windows test builds include a self-signed package and its public certificate.
 
 ## Quick start
 
 Install stable Rust and Cargo. Windows requires the MSVC toolchain and Visual Studio C++ Build Tools; macOS requires Xcode Command Line Tools. Linux does not require GTK or tray libraries.
 
-```sh
-cargo run -- --origin https://spa.example.org
+On first launch, edoproxy creates its configuration file with `https://apps.falkner.xyz` as the only allowed origin, port `8765`, and no target. Edit the generated file to configure additional origins or a startup target:
+
+```toml
+origins = ["https://apps.falkner.xyz", "http://localhost:5173"]
+port = 8765
+target = "https://svws.example.local:8443" # Optional startup target
 ```
 
-Replace the example with your SPA's exact origin, including the scheme and any non-default port, without a trailing slash.
+Origins include the scheme and optional port, without a path or trailing slash. The list must contain at least one exact origin; wildcards are not supported. Omit `target` to let the SPA configure it later.
 
-| Option | Environment variable | Default |
+```sh
+cargo run -- --config edoproxy.toml
+```
+
+Without `--config`, the application always uses the platform's per-user path, independent of the working directory:
+
+| Platform | Default file |
+| --- | --- |
+| Linux | `$XDG_CONFIG_HOME/edoproxy/config.toml`, otherwise `~/.config/edoproxy/config.toml` |
+| macOS | `~/Library/Application Support/edoproxy/config.toml` |
+| Windows (MSIX) | `config.toml` in the package's local data folder, resolved through Windows APIs |
+| Windows (unpackaged) | `%LOCALAPPDATA%\edoproxy\config.toml`, resolved through Windows APIs |
+
+Run `cargo run` without options to use this default. `--config` or `EDOPROXY_CONFIG` selects a different file instead. Missing files and parent directories are created, including for explicit paths. Existing files are not reset on startup. Invalid or inaccessible files cause startup to fail with a path-specific error. The selected path is logged. Files are read at startup; restart after editing them. CLI/environment overrides affect the current run only and are not saved.
+
+| Option | Environment variable | Behavior |
 | --- | --- | --- |
-| `--origin` | `EDOPROXY_ORIGIN` | Required |
-| `--port` | `EDOPROXY_PORT` | `8765` |
-| `--headless` | — | No tray on Linux; tray on Windows/macOS |
+| `--config` | `EDOPROXY_CONFIG` | Explicit TOML path |
+| `--origin` | `EDOPROXY_ORIGIN` | Replaces the file's origin list; repeat the flag or use comma-separated values |
+| `--port` | `EDOPROXY_PORT` | Overrides the file's port (default: `8765`) |
+| `--headless` | — | Disables the tray on desktop platforms |
 
-The listener binds exclusively to `127.0.0.1`. Logs are written to stdout/stderr; set `RUST_LOG=edoproxy=debug` for debug logging. On desktop platforms, use `--headless` to run without the tray.
+CLI options take precedence over environment variables, which take precedence over file values. Files must be valid even when overrides are provided. The configuration file is loaded or created even when CLI/environment overrides are supplied.
+
+The listener binds exclusively to `127.0.0.1`. Logs are written to stdout/stderr; set `RUST_LOG=edoproxy=debug` for debug logging. Linux always runs without a tray.
 
 ## Local API
 
-The SPA checks health, sets its target server, and then sends requests through `/proxy`.
+The SPA checks health, optionally changes the configured target server, and then sends requests through `/proxy`.
 
 | Endpoint | Purpose |
 | --- | --- |
-| `GET /health` | Reports local process health, version, and whether a target is configured; does not contact the target |
-| `POST /target` | Sets the target HTTP(S) origin in memory |
+| `GET /edoproxy/health` | Reports local process health, version, and whether a target is configured; does not contact the target |
+| `GET /edoproxy/target` | Returns `{"url":"https://server.example.org/"}` or `{"url":null}` |
+| `POST /edoproxy/target` | Sets and persists the target using `{"url":"https://server.example.org"}` |
+| `GET /edoproxy/origin` | Returns `{"origins":["https://apps.falkner.xyz"]}` |
+| `POST /edoproxy/origin` | Replaces and persists the list using `{"origins":["https://apps.falkner.xyz"]}` |
+| `GET /edoproxy/port` | Returns configured `port`, `active_port`, and `restart_required` |
+| `POST /edoproxy/port` | Saves `{"port":8765}` and returns the port status; takes effect after restart |
 | `/proxy/*` | Forwards the request to the configured target, removing the `/proxy` prefix |
 | `OPTIONS` | Handles CORS preflight locally |
 
 ```sh
-curl http://127.0.0.1:8765/health
+curl http://127.0.0.1:8765/edoproxy/health
 
-curl -X POST http://127.0.0.1:8765/target \
+curl -X POST http://127.0.0.1:8765/edoproxy/target \
   -H 'Origin: https://spa.example.org' \
   -H 'Content-Type: application/json' \
   -d '{"url":"https://svws.example.local:8443"}'
@@ -60,13 +87,17 @@ curl http://127.0.0.1:8765/proxy/api/schema \
   -H 'Origin: https://spa.example.org'
 ```
 
-The final request is forwarded to `https://svws.example.local:8443/api/schema`. The target must be an HTTP(S) origin without credentials, a path other than `/`, query parameters, or a fragment. It is never persisted and must be set again after a restart.
+The final request is forwarded to `https://svws.example.local:8443/api/schema`. The target must be an HTTP(S) origin without credentials, a path other than `/`, query parameters, or a fragment. The optional TOML target is loaded at startup. Changes through `POST /edoproxy/target` are saved atomically to the active TOML file before the in-memory target changes. Restarting restores the last saved target. A failed save returns HTTP 500 and leaves the current target unchanged. Comments, origins and port values in the file are preserved. Avoid editing the file externally while target updates are in progress. All allowed origins share this single target.
 
 Only health checks accept requests without an Origin header. Other origins are rejected before handlers execute, including for requests that change state. Responses to the allowed origin receive CORS headers, including errors and preflight responses. This protects against unrelated websites; it does not authenticate local programs.
 
 The proxy forwards the method, body, query parameters, and end-to-end headers, including `Authorization`. It removes hop-by-hop headers and the local `Origin` and `Referer`. Responses are streamed, and upstream CORS headers are replaced with the local policy. TLS certificates are verified and redirects are not followed automatically.
 
 Browser cookie authentication using `credentials: include`, WebSockets, and redirect URL rewriting are not yet supported.
+
+Management endpoints require an already allowed Origin, except for origin-less GET health checks. The old `/health` and `/target` paths have been removed. Health has no POST operation; browser preflight remains supported.
+
+Origin changes apply immediately after saving. Removing the caller's origin prevents its subsequent requests; the save response itself remains readable. Target and origin updates return 204, while port updates return 200 with the configured and active port. All writes are serialized and atomically replace the TOML file, preserving other settings and comments. Failed writes leave runtime values unchanged. Port changes require a restart; remove any CLI/environment port override if the saved port should take effect.
 
 ## Build and verify
 
@@ -81,25 +112,6 @@ The CI runs these checks on Linux, Windows, and macOS, except for the separate r
 
 The server uses Tokio, axum, and reqwest. Desktop dependencies (`tray-icon`, its re-exported `muda` menu API, `tao`, and `image`) are included only on Windows/macOS.
 
-## GitHub releases and test builds
-
-Regular commits and pull requests run CI checks; they do not publish releases. Pushing a version tag starts the release workflow:
-
-| Tag | GitHub release | Latest |
-| --- | --- | --- |
-| `v0.1.0-alpha.1` | Prerelease | No |
-| `v0.1.0-beta.1` | Prerelease | No |
-| `v0.1.0-rc.1` | Prerelease | No |
-| `v0.1.0` | Regular release | Yes |
-
-The tag must match the version in `Cargo.toml`, prefixed with `v`. Commit the version and updated `Cargo.lock` first, then create and push the tag:
-
-```sh
-git tag v0.1.0-alpha.1
-git push origin v0.1.0-alpha.1
-```
-
-A local tag or a version change alone does not trigger publication. The workflow validates the tag, runs formatting, Clippy and tests, builds release binaries, and publishes only after all builds succeed. It attaches archives for Linux x86_64, Windows x86_64 and macOS ARM64, including the MIT license. These are standalone binaries, not MSIX/DMG installers. Each stable tag explicitly becomes Latest, including if an older stable version is tagged later. Prereleases leave the existing Latest release unchanged.
 
 ### Manual test builds
 
@@ -114,7 +126,7 @@ The supplied systemd unit is a **user service**. The process stays in the foregr
 1. Install the release binary at `/usr/local/bin/edoproxy`.
 2. Create `~/.config/systemd/user` and `~/.config/edoproxy` if needed.
 3. Copy `packaging/linux/edoproxy.service` to `~/.config/systemd/user/edoproxy.service`.
-4. Copy `packaging/linux/environment.example` to `~/.config/edoproxy/environment` and set the SPA origin.
+4. Optionally copy `edoproxy.example.toml` to `~/.config/edoproxy/config.toml` and edit it. If missing, the service creates it with defaults on first start.
 5. Start the service:
 
 ```sh
@@ -130,19 +142,19 @@ Running a user service without a logged-in session requires systemd lingering. S
 | Platform | Distribution plan | Templates |
 | --- | --- | --- |
 | Windows | MSIX through the Microsoft Store | [Windows packaging](packaging/windows/README.md) |
-| macOS | DMG containing a native `.app`, initially unsigned and unnotarized, outside the App Store | [macOS packaging](packaging/macos/README.md) |
+| macOS | DMG containing a native `.app`, ad-hoc signed without a developer certificate and unnotarized, outside the App Store | [macOS packaging](packaging/macos/README.md) |
 | Linux | Standalone binary managed by systemd | [User service](packaging/linux/edoproxy.service) |
 
 Remaining implementation work:
 
-- Persistent platform-specific configuration for the allowed origin and port, plus file logging. The target address will remain in memory.
-- On Windows, resolve the MSIX package's local data directory through Windows APIs and use a `logs` subdirectory. Keep writable data separate from installed program files.
+- File logging; platform-specific TOML discovery and initial file creation are implemented.
+- On Windows, add a `logs` subdirectory in the resolved local data directory. Keep writable data separate from installed program files.
 - On macOS, use `~/Library/Application Support/edoproxy` for configuration and `~/Library/Logs/edoproxy` for logs.
 - Add the current target and an automatic-start checkbox to the tray. Windows will use the manifest's per-user StartupTask and respect the OS-managed state; macOS will use a per-user LaunchAgent.
-- Create native application/store icons and a monochrome macOS menu-bar template icon.
-- Automate MSIX and DMG builds, define the Store identity, publisher and bundle ID, and verify Store signing and submission requirements before publication.
+- Create Windows application/store icons and a monochrome macOS menu-bar template icon. The DMG script generates the macOS application icon.
+- Define the final Store identity and publisher and verify submission requirements before Store publication. MSIX builds currently use a test identity and self-signed certificate. The macOS DMG build uses bundle ID `xyz.falkner.edoproxy`.
 
-Desktop launches currently require `--origin` or `EDOPROXY_ORIGIN`. Finder/Start menu launches need the planned configuration loading. Packaging templates are not validated installation packages.
+Desktop launches automatically load or create the per-user TOML file, including when launched through Finder or the Start menu. MSIX installation must still be verified on Windows; local macOS checks cannot exercise Windows installer behavior.
 
 ## Artwork
 

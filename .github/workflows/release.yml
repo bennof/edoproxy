@@ -45,6 +45,9 @@ jobs:
             target: aarch64-apple-darwin
             binary: edoproxy
     runs-on: ${{ matrix.os }}
+    env:
+      # Make the Windows executable independent of a separately installed VC runtime.
+      RUSTFLAGS: ${{ matrix.os == 'windows-latest' && '-C target-feature=+crt-static' || '' }}
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -63,12 +66,27 @@ jobs:
           BINARY: ${{ matrix.binary }}
         run: |
           mkdir -p staging dist
-          cp "target/$BUILD_TARGET/release/$BINARY" LICENSE README.md staging/
+          cp "target/$BUILD_TARGET/release/$BINARY" LICENSE README.md edoproxy.example.toml staging/
           if [[ "$RUNNER_OS" == "Windows" ]]; then
             7z a "dist/edoproxy-$RELEASE_TAG-$BUILD_TARGET.zip" ./staging/*
           else
             tar -czf "dist/edoproxy-$RELEASE_TAG-$BUILD_TARGET.tar.gz" -C staging .
           fi
+      - name: Build macOS DMG
+        if: runner.os == 'macOS'
+        env:
+          BUILD_LABEL: ${{ github.event_name == 'push' && github.ref_name || format('test-{0}-{1}', github.run_id, github.run_attempt) }}
+          BUILD_TARGET: ${{ matrix.target }}
+        run: |
+          python3 scripts/build_dmg.py --binary "target/$BUILD_TARGET/release/edoproxy" --output "dist/edoproxy-$BUILD_LABEL-$BUILD_TARGET.dmg"
+      - name: Build Windows MSIX
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          BUILD_LABEL: ${{ github.event_name == 'push' && github.ref_name || format('test-{0}-{1}', github.run_id, github.run_attempt) }}
+          BUILD_TARGET: ${{ matrix.target }}
+        run: |
+          ./scripts/build_msix.ps1 -Binary "target/$env:BUILD_TARGET/release/edoproxy.exe" -Output "dist/edoproxy-$env:BUILD_LABEL-$env:BUILD_TARGET.msix" -TestSign
       - uses: actions/upload-artifact@v6
         with:
           name: release-${{ matrix.target }}

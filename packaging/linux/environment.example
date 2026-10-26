@@ -1,6 +1,0 @@
-# Copyright (c) 2026 Benjamin Benno Falkner
-# SPDX-License-Identifier: MIT
-
-EDOPROXY_ORIGIN=https://spa.example.org
-EDOPROXY_PORT=8765
-RUST_LOG=edoproxy=info
