@@ -91,10 +91,20 @@ try {
         & $signtool sign /fd SHA256 /sha1 $certificate.Thumbprint /s My $outputPath
         if ($LASTEXITCODE -ne 0) { throw 'MSIX signing failed.' }
         Export-Certificate -Cert $certificate -FilePath $certificatePath | Out-Null
-        # Check embedded signature integrity without installing trust on the build machine.
-        $signature = Get-AuthenticodeSignature $outputPath
-        if (-not $signature.SignerCertificate -or $signature.SignerCertificate.Thumbprint -ne $certificate.Thumbprint -or $signature.Status -notin @('Valid', 'NotTrusted')) {
-            throw "Unexpected package signature status: $($signature.Status)"
+        # MSIX verification needs the package SIP and a trusted certificate.
+        # Trust only this temporary leaf certificate, and remove it even on failure.
+        $trustPath = "Cert:\LocalMachine\TrustedPeople\$($certificate.Thumbprint)"
+        $alreadyTrusted = Test-Path $trustPath
+        try {
+            if (-not $alreadyTrusted) {
+                Import-Certificate -FilePath $certificatePath -CertStoreLocation 'Cert:\LocalMachine\TrustedPeople' | Out-Null
+            }
+            & $signtool verify /pa /v $outputPath
+            if ($LASTEXITCODE -ne 0) { throw 'MSIX signature verification failed.' }
+        } finally {
+            if (-not $alreadyTrusted -and (Test-Path $trustPath)) {
+                Remove-Item $trustPath
+            }
         }
     }
     & $makeappx unpack /p $outputPath /d (Join-Path $work 'verify')

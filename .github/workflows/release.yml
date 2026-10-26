@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   validate:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       prerelease: ${{ steps.metadata.outputs.prerelease }}
       latest: ${{ steps.metadata.outputs.latest }}
@@ -35,8 +35,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
             binary: edoproxy
           - os: windows-latest
             target: x86_64-pc-windows-msvc
@@ -50,6 +50,11 @@ jobs:
       RUSTFLAGS: ${{ matrix.os == 'windows-latest' && '-C target-feature=+crt-static' || '' }}
     steps:
       - uses: actions/checkout@v6
+      - name: Install musl build tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes musl-tools
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -58,6 +63,20 @@ jobs:
       - run: cargo clippy --locked --all-targets --target ${{ matrix.target }} -- -D warnings
       - run: cargo test --locked --target ${{ matrix.target }}
       - run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Verify static Linux binary
+        if: runner.os == 'Linux'
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
+        run: |
+          binary="target/$BUILD_TARGET/release/edoproxy"
+          file "$binary"
+          readelf -lW "$binary" > program-headers.txt
+          readelf -dW "$binary" > dynamic-section.txt
+          if grep -q 'INTERP' program-headers.txt || grep -q '(NEEDED)' dynamic-section.txt; then
+            echo "Linux release must not require a dynamic loader or shared libraries."
+            exit 1
+          fi
+          "$binary" --version
       - name: Package binary and license
         shell: bash
         env:
@@ -96,7 +115,7 @@ jobs:
   publish:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: [validate, build]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:

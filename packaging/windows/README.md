@@ -7,7 +7,7 @@ The MSIX contains the same proxy, tray, management endpoints and persistent TOML
 
 ## Build on Windows
 
-Install Rust/MSVC, Visual Studio C++ Build Tools, PowerShell 7 and the Windows SDK (MakeAppx and SignTool).
+Install Rust/MSVC, Visual Studio C++ Build Tools, PowerShell 7 and the Windows SDK (MakeAppx and SignTool). Run test-signed builds in an elevated PowerShell session; GitHub-hosted Windows runners already provide the required permissions.
 
 ```powershell
 $env:RUSTFLAGS = '-C target-feature=+crt-static'
@@ -15,7 +15,7 @@ cargo build --release --locked
 ./scripts/build_msix.ps1 -Binary target/release/edoproxy.exe -Output dist/edoproxy.msix -TestSign
 ```
 
-The script fills the manifest, generates transparent logo assets, includes the license and example TOML, builds and unpacks the package for verification, and optionally signs it with a temporary self-signed certificate. Only the public `.cer` file is exported; the temporary private key is removed. No trust certificate is installed automatically.
+The script fills the manifest, generates transparent logo assets, includes the license and example TOML, builds and unpacks the package for verification, and optionally signs it with a temporary self-signed certificate. Only the public `.cer` file is exported; the temporary private key is removed. For `SignTool verify /pa /v`, the build temporarily imports the public certificate into LocalMachine TrustedPeople and removes that entry in a `finally` block. It does not install a trusted root certificate.
 
 The Release workflow uploads the x64 MSIX and its public test certificate alongside the standalone ZIP. Manual runs only produce artifacts; version tags attach them to the release. These are test-signed packages, not Microsoft Store submissions.
 

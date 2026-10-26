@@ -119,6 +119,20 @@ Open **Actions → Release → Run workflow**, select a branch or tag, and start
 
 The workflow must be present on the repository's default branch for the Run workflow button to be available.
 
+## Linux release compatibility
+
+Linux release and manual test artifacts use `x86_64-unknown-linux-musl` with a statically linked C runtime. They do not depend on the build runner's glibc version and are intended for x86_64 Debian servers as well as other compatible Linux distributions. ARM64 servers need a separate build, which is not currently included.
+
+Ubuntu runners are pinned to `ubuntu-24.04`. The release workflow installs `musl-tools`, runs Clippy and tests for the musl target, and checks the resulting executable for dynamic loader/shared-library dependencies before packaging it. Ordinary CI still checks the native Linux target as well.
+
+To build the release target locally on Debian/Ubuntu:
+
+```sh
+sudo apt-get install musl-tools
+rustup target add x86_64-unknown-linux-musl
+cargo build --release --locked --target x86_64-unknown-linux-musl
+```
+
 ## Linux service
 
 The supplied systemd unit is a **user service**. The process stays in the foreground; systemd manages its lifecycle.
