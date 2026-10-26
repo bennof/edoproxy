@@ -32,7 +32,8 @@ tao = "0.34"
 image = { version = "0.25", default-features = false, features = ["png"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.61", features = ["Storage"] }
+# ApplicationData::LocalFolder also requires Storage_Search in windows 0.61.
+windows = { version = "0.61", features = ["Storage", "Storage_Search"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
