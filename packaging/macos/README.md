@@ -18,4 +18,4 @@ No Apple developer certificate, Developer ID signing, notarization or App Store 
 
 The Release workflow includes an ARM64 DMG alongside the macOS binary archive. Manual runs only upload artifacts. Tag-triggered runs attach both files to the GitHub release.
 
-Drag the app to Applications, then launch it. It loads or creates `~/Library/Application Support/edoproxy/config.toml`. File logging, LaunchAgent startup management and a monochrome menu-bar template icon remain to be implemented.
+Drag the app to Applications, then launch it. It loads or creates `~/Library/Application Support/edoproxy/config.toml`. The menu bar shows the version, local address, current target and a Start at login checkbox. The latter manages a per-user LaunchAgent for the next login. The app uses accessory activation (no Dock icon) and a monochrome template tray icon. File logging remains to be implemented.

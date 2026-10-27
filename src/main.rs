@@ -11,6 +11,8 @@ use edoproxy::{
     config::Config,
     proxy::{AppState, router},
 };
+#[cfg(target_os = "macos")]
+mod autostart;
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 mod tray;
 
@@ -33,6 +35,22 @@ fn main() -> anyhow::Result<()> {
     )))?;
     tracing::info!(address = %listener.local_addr()?, "proxy listening");
     let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    let tray_state = state.clone();
+    #[cfg(target_os = "macos")]
+    let startup_arguments = {
+        let mut args = vec![
+            "--config".to_owned(),
+            config.path()?.to_string_lossy().into_owned(),
+        ];
+        for origin in &config.origin {
+            args.extend(["--origin".to_owned(), origin.clone()]);
+        }
+        if let Some(port) = config.port {
+            args.extend(["--port".to_owned(), port.to_string()]);
+        }
+        args
+    };
     let server = runtime.spawn(async move {
         axum::serve(listener, router(state))
             .with_graceful_shutdown(async move {
@@ -42,7 +60,15 @@ fn main() -> anyhow::Result<()> {
     });
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     if !config.headless {
-        return tray::run(stop_tx, runtime, server);
+        return tray::run(
+            stop_tx,
+            runtime,
+            server,
+            tray_state,
+            settings.port,
+            #[cfg(target_os = "macos")]
+            startup_arguments,
+        );
     }
     let _keep_shutdown_sender = stop_tx;
     runtime.block_on(server)??;

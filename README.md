@@ -17,7 +17,7 @@ Windows and macOS provide a system tray. Linux runs without a graphical session 
 
 ## Current status
 
-The development scaffold includes the HTTP proxy, origin validation, preflight handling, a basic tray with a Quit command, integration tests, and CI for Linux, Windows, and macOS. macOS DMG and Windows MSIX packaging are included. Windows test builds include a self-signed package and its public certificate.
+The development scaffold includes the HTTP proxy, origin validation, preflight handling, a tray showing version, local address and current target, with Quit and macOS login startup controls, integration tests, and CI for Linux, Windows, and macOS. macOS DMG and Windows MSIX packaging are included. Windows test builds include a self-signed package and its public certificate.
 
 ## Quick start
 
@@ -164,8 +164,8 @@ Remaining implementation work:
 - File logging; platform-specific TOML discovery and initial file creation are implemented.
 - On Windows, add a `logs` subdirectory in the resolved local data directory. Keep writable data separate from installed program files.
 - On macOS, use `~/Library/Application Support/edoproxy` for configuration and `~/Library/Logs/edoproxy` for logs.
-- Add the current target and an automatic-start checkbox to the tray. Windows will use the manifest's per-user StartupTask and respect the OS-managed state; macOS will use a per-user LaunchAgent.
-- Create Windows application/store icons and a monochrome macOS menu-bar template icon. The DMG script generates the macOS application icon.
+- Add Windows automatic-start controls using the manifest's per-user StartupTask. macOS already provides a Start at login checkbox backed by a per-user LaunchAgent.
+- Refine platform icon artwork as needed. macOS uses a monochrome template tray icon; its application icon remains colored.
 - Define the final Store identity and publisher and verify submission requirements before Store publication. MSIX builds currently use a test identity and self-signed certificate. The macOS DMG build uses bundle ID `xyz.falkner.edoproxy`.
 
 Desktop launches automatically load or create the per-user TOML file, including when launched through Finder or the Start menu. MSIX installation must still be verified on Windows; local macOS checks cannot exercise Windows installer behavior.
@@ -178,3 +178,9 @@ Desktop launches automatically load or create the per-user TOML file, including 
 ## License
 
 Copyright (c) 2026 Benjamin Benno Falkner. Licensed under the [MIT License](LICENSE).
+
+### macOS menu bar and login startup
+
+The application runs as a menu-bar accessory without a Dock icon. Its menu shows the Cargo version, local listening address and current target, which updates after API changes. The tray icon is a monochrome template so macOS controls its appearance.
+
+After copying the app into Applications and launching it there, enable **Start at login**. This writes `~/Library/LaunchAgents/xyz.falkner.edoproxy.plist`; disabling it removes that file. Changes take effect at the next login and do not start a duplicate instance or terminate the current one. The agent preserves the active configuration path and explicit CLI origin/port overrides. Move the app first: enabling startup from a mounted DMG or a translocated app is rejected with a message in the menu. If the installed app is moved later, re-enable startup to update its path.

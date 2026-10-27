@@ -3,7 +3,7 @@
 
 [package]
 name = "edoproxy"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 edition = "2024"
 description = "Local CORS proxy for edo365"
 license = "MIT"
